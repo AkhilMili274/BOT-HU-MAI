@@ -1,0 +1,112 @@
+import os
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
+from telegram.constants import ChatAction
+
+# Telegram Bot Token
+BOT_TOKEN = "7855754534:AAHj0H57Azx-4hhF1RrYZ4QlhBqa_JVYQoo"
+
+# Hex code mappings
+button_codes = {
+    "50×50": b'\x88\x10\x19',
+    "100×100": b'\x88\x01\x0A',
+    "BERMUDA": b'\x88\x01\x01',
+    "NEXTERA": b'\x88\x01\x16',
+    "NO LAND": b'\x88\x01\x20',
+}
+
+# Temporary file storage
+UPLOAD_DIR = "uploads"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+async def start(update: Update, context):
+    """Send a welcome message and ask for a file."""
+    await update.message.reply_text("Welcome! Please send me your meta file to get started.")
+
+async def handle_file(update: Update, context):
+    """Handle the uploaded file and present replacement options."""
+    file = update.message.document
+    if not file:
+        await update.message.reply_text("Please send a valid file.")
+        return
+
+    # Save the file locally
+    file_path = os.path.join(UPLOAD_DIR, file.file_name)
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.UPLOAD_DOCUMENT)
+    new_file = await file.get_file()
+    await new_file.download_to_drive(file_path)
+
+    # Store the file path in user data
+    context.user_data["file_path"] = file_path
+
+    # Present replacement options
+    keyboard = [
+        [InlineKeyboardButton(name, callback_data=name) for name in button_codes.keys()]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("File received! Choose a replacement code:", reply_markup=reply_markup)
+
+async def replace_code(update: Update, context):
+    """Replace the hex code in the file and return it."""
+    query = update.callback_query
+    await query.answer()
+
+    # Get the selected replacement code
+    selected_code_name = query.data
+    selected_code = button_codes[selected_code_name]
+
+    # Get the file path from user data
+    file_path = context.user_data.get("file_path")
+    if not file_path or not os.path.exists(file_path):
+        await query.edit_message_text("File not found. Please upload it again.")
+        return
+
+    # Read the file as binary
+    with open(file_path, "rb") as file:
+        file_data = file.read()
+
+    # Detect existing hex code
+    detected_code = None
+    for code in button_codes.values():
+        if code in file_data:
+            detected_code = code
+            break
+
+    if detected_code:
+        # Replace the code
+        modified_data = file_data.replace(detected_code, selected_code)
+
+        # Verify replacement
+        if selected_code in modified_data and detected_code not in modified_data:
+            # Save the modified file
+            modified_file_path = file_path
+            with open(modified_file_path, "wb") as file:
+                file.write(modified_data)
+
+            # Send the modified file back to the user
+            await context.bot.send_document(
+                chat_id=query.message.chat_id,
+                document=open(modified_file_path, "rb"),
+                filename=os.path.basename(file_path),
+            )
+            await query.edit_message_text(f"File modified successfully! Replaced {detected_code.hex()} with {selected_code.hex()}.")
+        else:
+            await query.edit_message_text("Error: Replacement failed. No changes were made.")
+    else:
+        await query.edit_message_text("No matching hex code found in the file.")
+
+def main():
+    # Initialize the bot
+    app = Application.builder().token(BOT_TOKEN).build()
+
+    # Handlers
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
+    app.add_handler(CallbackQueryHandler(replace_code))
+
+    # Run the bot
+    print("Bot is running...")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
